@@ -7,6 +7,7 @@
   "scripts": {
     "deploy": "tgcloud push",
     "status": "tgcloud status",
-    "run": "tgcloud run"
+    "run": "tgcloud run",
+    "test": "node --experimental-vm-modules tests/bot.test.mjs"
   }
 }
