@@ -6,7 +6,15 @@ import { homedir } from 'node:os';
 import { chromium } from 'playwright';
 import { parseResultHtml, formatSummary } from './result-import.mjs';
 
-const profile = join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'HomeworkPunisher', 'BraveProfile');
+const dataRoot = join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'HomeworkPunisher');
+const profile = join(dataRoot, 'BraveProfile');
+const edgeProfile = join(dataRoot, 'EdgeTestProfile');
+const edgePaths = [
+  join(process.env.PROGRAMFILES || 'C:\\Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+  join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+  join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+];
+const edge = edgePaths.find(existsSync);
 const bravePaths = [
   join(process.env.PROGRAMFILES || 'C:\\Program Files', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
   join(process.env.LOCALAPPDATA || '', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
@@ -16,6 +24,7 @@ const brave = bravePaths.find(existsSync);
 if (!brave) { console.error('Brave не найден. Установите Brave Browser.'); process.exit(1); }
 let context = null, running = false, scanning = false, stopping = false, exiting = false;
 let managedPage = null;
+let activeBrowser = 'Brave';
 let cancelScan = false;
 const log = [];
 const importedResults = new Map();
@@ -28,8 +37,8 @@ function report(message) {
 }
 const html = String.raw`<!doctype html><html lang="ru"><meta charset="utf-8"><title>Homework Punisher</title>
 <style>body{font:16px system-ui;background:#111827;color:#f9fafb;max-width:780px;margin:50px auto;padding:0 20px}button{border:0;border-radius:9px;padding:13px 20px;margin:0 8px 16px 0;cursor:pointer;font-weight:600}button:disabled{opacity:.4}#start{background:#86efac}#stop{background:#fde68a}#exit{background:#fca5a5}pre{background:#030712;border-radius:12px;padding:18px;height:340px;overflow:auto;white-space:pre-wrap}small{color:#9ca3af}</style>
-<h1>Homework Punisher</h1><p>Локальная проверка МЭШ через отдельный профиль Brave</p>
-<button id="start">Открыть Brave для сканирования</button><button id="scan">Сканировать страницу</button><button id="manual">Открыть обычный Brave для результатов</button><button id="stop">Остановить</button><button id="exit">Выход</button>
+<h1>Homework Punisher</h1><p>Локальная проверка МЭШ через отдельные профили Brave и Edge</p>
+<button id="start">Открыть Brave для сканирования</button><button id="edge">Тест Microsoft Edge</button><button id="scan">Сканировать страницу</button><button id="manual">Открыть обычный Brave для результатов</button><button id="stop">Остановить</button><button id="exit">Выход</button>
 <p id="status">Готов к запуску</p><section><h2>Импорт результатов ЦДЗ</h2><input type="file" id="files" accept=".html,.htm,text/html" multiple><button id="import">Импортировать HTML</button><button id="copy">Скопировать сводку</button><button id="clear">Очистить импорт</button><pre id="summary">Пока нет импортированных заданий</pre></section><pre id="log"></pre>
 <small>Открой раздел «Задания» в Brave, затем нажми «Сканировать страницу». Для просмотра результатов используй кнопку «Открыть обычный Brave для результатов»: это отдельное окно без управления Playwright. При необходимости войди в МЭШ в обычном профиле. Публикаций нет.</small>
 <script>
@@ -61,6 +70,7 @@ document.getElementById('clear').onclick=async()=>{
  document.getElementById('summary').textContent='Пока нет импортированных заданий';status.textContent=data.message;
 };
 document.getElementById('start').onclick=()=>act('start');
+document.getElementById('edge').onclick=()=>act('edge');
 document.getElementById('scan').onclick=()=>act('scan');
 document.getElementById('manual').onclick=()=>act('manual');
 document.getElementById('stop').onclick=()=>act('stop');
@@ -76,13 +86,18 @@ async function stop() {
   try { if (context) await context.close(); } catch(e) { report('Закрытие браузера: '+e.message); }
   context=null; managedPage=null; running=false; scanning=false; stopping=false; report('Проверка остановлена, окно Brave закрыто.');
 }
-async function scan() {
+async function scan(browserType='brave') {
   if (running) return;
   running=true;
-  report('Открываю Brave с отдельным профилем...');
+  const isEdge=browserType==='edge';
+  if(isEdge&&!edge){report('Microsoft Edge не найден. Установи Edge или используй Brave.');return;}
+  const executable=isEdge?edge:brave;
+  const selectedProfile=isEdge?edgeProfile:profile;
+  activeBrowser=isEdge?'Microsoft Edge':'Brave';
+  report('Открываю '+activeBrowser+' с отдельным профилем...');
   try {
-    context=await chromium.launchPersistentContext(profile, {
-      executablePath:brave,
+    context=await chromium.launchPersistentContext(selectedProfile, {
+      executablePath:executable,
       headless:false,
       viewport:null,
       chromiumSandbox:true,
@@ -106,7 +121,7 @@ async function scan() {
       }
     }
     managedPage=page;
-    report('Страница открыта: '+page.url().split('?')[0]);
+    report(activeBrowser+' | Страница открыта: '+page.url().split('?')[0]);
     report('Перейди в Brave в раздел «Задания», затем нажми «Сканировать страницу».');
   } catch(e) { report('Ошибка: '+e.message); await stop(); }
 }
@@ -252,6 +267,11 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&path==='/start'){
     if(running||stopping) return send(res,409,'Проверка уже запущена');
     void scan(); return send(res,200,'Проверка запущена');
+  }
+  if(req.method==='POST'&&path==='/edge'){
+    if(running||stopping) return send(res,409,'Сначала останови текущий браузер');
+    if(!edge) return send(res,404,'Microsoft Edge не найден на компьютере');
+    void scan('edge'); return send(res,200,'Запускаю тест Microsoft Edge с отдельным профилем');
   }
   if(req.method==='POST'&&path==='/scan'){
     if(!running || !managedPage || managedPage.isClosed()) return send(res,409,'Сначала открой Brave');
