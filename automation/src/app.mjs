@@ -99,42 +99,72 @@ async function scanVisibleAssignments() {
   if (scanning || !managedPage || managedPage.isClosed()) return;
   scanning=true; cancelScan=false;
   const page=managedPage;
-  const found=new Map();
-  let unchanged=0, lastFingerprint='';
-  report('Начинаю поиск ЦДЗ на открытой странице: '+page.url().split('?')[0]);
+  const seen=new Set();
+  let total=0;
+  report('Начинаю расширенный поиск ЦДЗ: '+page.url().split('?')[0]);
   try {
-    for(let step=0;step<45 && !cancelScan;step++) {
-      const data=await page.evaluate(() => {
-        const re=/цдз/i;
-        const nodes=[...document.querySelectorAll('p,li,td,span,div')];
-        const hits=[];
-        for(const el of nodes) {
-          if(el.children.length && [...el.children].some(c=>re.test(c.innerText||''))) continue;
-          const text=(el.innerText||'').trim().replace(/\s+/g,' ');
-          if(text && re.test(text) && text.length<=400) hits.push(text);
+    // Traverse each scrollable container independently: the homework list may
+    // scroll inside a nested element instead of the document.
+    const candidates=await page.evaluate(() => {
+      const all=[document.scrollingElement,...document.querySelectorAll('*')].filter(Boolean);
+      return all.map((el,i)=>({i,el})).filter(({el})=>{
+        const style=getComputedStyle(el);
+        return el.scrollHeight>el.clientHeight+100 && el.clientHeight>140 &&
+          (el===document.scrollingElement || /auto|scroll|overlay/.test(style.overflowY));
+      }).map(({i,el})=>({
+        index:i, tag:el.tagName, cls:String(el.className||'').slice(0,70),
+        height:el.scrollHeight, view:el.clientHeight
+      })).sort((a,b)=>b.height-a.height).slice(0,12);
+    });
+    report('Прокручиваемых областей: '+candidates.length);
+    if(!candidates.length) report('Не обнаружены прокручиваемые области. Возможно, список ещё загружается.');
+    for(let area=0;area<candidates.length && !cancelScan;area++){
+      const info=candidates[area];
+      report('Область '+(area+1)+'/'+candidates.length+': '+info.tag+' '+info.cls+' ('+info.view+'/'+info.height+' px)');
+      let stalled=0, lastPosition=-1;
+      for(let step=0;step<120 && !cancelScan;step++){
+        const result=await page.evaluate(({index,reset})=>{
+          const all=[document.scrollingElement,...document.querySelectorAll('*')].filter(Boolean);
+          const el=all[index];
+          if(!el || !el.isConnected) return {missing:true,hits:[]};
+          if(reset) el.scrollTop=0;
+          const re=/цдз/i;
+          const hits=[];
+          for(const node of document.querySelectorAll('p,li,td,span,div')){
+            if(node.children.length && [...node.children].some(child=>re.test(child.innerText||''))) continue;
+            const value=(node.innerText||'').trim().replace(/\s+/g,' ');
+            if(!value || !re.test(value) || value.length>400) continue;
+            const parent=node.parentElement;
+            const context=(parent?.parentElement?.innerText||parent?.innerText||value)
+              .trim().replace(/\s+/g,' ').slice(0,500);
+            const rect=node.getBoundingClientRect();
+            // Deduplicate nested representations but retain equal texts in
+            // distinct visible homework cards.
+            hits.push({value,context,y:Math.round(rect.top)});
+          }
+          const before=el.scrollTop;
+          const max=el.scrollHeight-el.clientHeight;
+          el.scrollTop=Math.min(max,before+Math.max(250,Math.round(el.clientHeight*.7)));
+          return {hits,before,after:el.scrollTop,max,scrollHeight:el.scrollHeight};
+        },{index:info.index,reset:step===0});
+        if(result.missing){report('Область изменилась при загрузке; пропускаю.');break;}
+        for(const hit of result.hits){
+          // Context helps distinguish identical labels across assignments.
+          const key=hit.value+'|'+hit.context;
+          if(!seen.has(key)){
+            seen.add(key);total++;
+            report('ЦДЗ #'+total+': '+hit.value.slice(0,140)+' | Контекст: '+hit.context.slice(0,160));
+          }
         }
-        const scrollables=[document.scrollingElement,...document.querySelectorAll('*')]
-          .filter(Boolean).filter(el=>el.scrollHeight>el.clientHeight+80 && el.clientHeight>100);
-        const target=scrollables.sort((a,b)=>(b.clientHeight*b.clientWidth)-(a.clientHeight*a.clientWidth))[0];
-        const before=target?.scrollTop||0;
-        const height=target?.scrollHeight||0;
-        const viewport=target?.clientHeight||0;
-        if(target) target.scrollTop=Math.min(target.scrollTop+Math.max(350,Math.floor(viewport*.8)),height);
-        return {hits, before, after:target?.scrollTop||0,height,viewport};
-      });
-      for(const hit of data.hits) if(!found.has(hit)) {
-        found.set(hit,true); report('ЦДЗ #'+found.size+': '+hit.slice(0,200));
+        if(step%10===0) report('Область '+(area+1)+', шаг '+(step+1)+': '+Math.round(result.after)+'/'+Math.round(result.max)+' px, найдено '+total);
+        if(result.after===lastPosition && result.after>=result.max-2) stalled++; else stalled=0;
+        lastPosition=result.after;
+        if(stalled>=5) break;
+        await page.waitForTimeout(500);
       }
-      const fingerprint=[data.after,data.height,found.size].join(':');
-      if(fingerprint===lastFingerprint) unchanged++; else unchanged=0;
-      lastFingerprint=fingerprint;
-      if(step%5===0) report('Прокрутка '+(step+1)+': найдено '+found.size+' упоминаний ЦДЗ');
-      if(unchanged>=3) break;
-      await page.waitForTimeout(650);
     }
     if(cancelScan) report('Сканирование остановлено.');
-    else report('Сканирование закончено. Уникальных текстовых упоминаний ЦДЗ: '+found.size+'. Это ещё не число завершённых тестов.');
-    if(!found.size && !cancelScan) report('Проверь, что открыт именно раздел «Задания». Если список имеет отдельную прокрутку, потребуется уточнить его структуру.');
+    else report('Поиск завершён. Найдено '+total+' различных сочетаний текста и контекста ЦДЗ. Это предварительный результат, не число тестов.');
   } catch(e) { if(!cancelScan) report('Ошибка сканирования: '+e.message); }
   finally { scanning=false; }
 }
