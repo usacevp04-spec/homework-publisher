@@ -1,27 +1,49 @@
 import { chromium } from 'playwright';
 
-const START_URL = 'https://school.mos.ru/diary/schedules/day';
+const targets = [
+  'https://school.mos.ru/',
+  'https://school.mos.ru/diary/schedules/day',
+  'https://uchebnik.mos.ru/'
+];
+
 const browser = await chromium.launch({ headless: true });
-const context = await browser.newContext({ viewport: { width: 900, height: 900 }, locale: 'ru-RU' });
-const page = await context.newPage();
+const context = await browser.newContext({
+  viewport: { width: 900, height: 900 },
+  locale: 'ru-RU'
+});
+
+let reachable = false;
 try {
-  await page.goto(START_URL, { waitUntil: 'domcontentloaded', timeout: 45000 });
-  const currentUrl = new URL(page.url());
-  const safeOrigin = currentUrl.origin;
-  const headings = await page.locator('h1, h2').allTextContents();
-  const hasAssignments = await page.getByText('Задания', { exact: true }).count() > 0;
-  const loginInputs = await page.locator('input[type="password"]').count();
-  console.log(JSON.stringify({
-    status: 'diagnostic_only',
-    origin: safeOrigin,
-    headings: headings.map(s => s.trim()).filter(Boolean).slice(0, 5),
-    hasAssignments,
-    passwordFieldVisible: loginInputs > 0,
-    message: 'No credentials entered; no results read; no Telegram publication.'
-  }, null, 2));
-} catch (error) {
-  console.error('Diagnostic failed:', error.message);
-  process.exitCode = 1;
+  for (const url of targets) {
+    const page = await context.newPage();
+    const target = new URL(url);
+    try {
+      const response = await page.goto(url, {
+        waitUntil: 'commit',
+        timeout: 15000
+      });
+      reachable = true;
+      console.log(JSON.stringify({
+        target: target.origin + target.pathname,
+        status: 'navigation_committed',
+        httpStatus: response?.status() ?? null,
+        finalOrigin: new URL(page.url()).origin
+      }));
+    } catch (error) {
+      console.log(JSON.stringify({
+        target: target.origin + target.pathname,
+        status: 'navigation_failed',
+        errorName: error.name,
+        errorMessage: error.message.split('\n')[0]
+      }));
+    } finally {
+      await page.close();
+    }
+  }
+  console.log(reachable
+    ? 'At least one navigation succeeded. Login and parsing are not enabled.'
+    : 'No navigation succeeded from this runner. Check runner connectivity and site access.');
+  if (!reachable) process.exitCode = 1;
 } finally {
   await context.close();
   await browser.close();
