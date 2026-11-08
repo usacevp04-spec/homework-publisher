@@ -105,7 +105,7 @@ async function scanVisibleAssignments() {
     // Use a stable element index only for this scan; re-identify scroll areas
     // each step because MES may rerender the list.
     const areas=await page.evaluate(() => {
-      const elements=[document.scrollingElement,...document.querySelectorAll('*')].filter(Boolean);
+      const elements=[...new Set([document.scrollingElement,...document.querySelectorAll('*')].filter(Boolean))];
       return elements.map((el,index)=>({el,index})).filter(({el})=>{
         const style=getComputedStyle(el);
         return el.scrollHeight>el.clientHeight+100 && el.clientHeight>140 &&
@@ -124,7 +124,7 @@ async function scanVisibleAssignments() {
       let stalled=0,lastPosition=-1,lastHeight=-1;
       for(let step=0;step<120&&!cancelScan;step++) {
         const result=await page.evaluate(({index,reset})=>{
-          const all=[document.scrollingElement,...document.querySelectorAll('*')].filter(Boolean);
+          const all=[...new Set([document.scrollingElement,...document.querySelectorAll('*')].filter(Boolean))];
           const scroller=all[index];
           if(!scroller||!scroller.isConnected) return {missing:true,items:[]};
           if(reset) scroller.scrollTop=0;
@@ -152,7 +152,7 @@ async function scanVisibleAssignments() {
             const title=normalize(node.innerText).slice(0,200);
             const groupText=normalize(card.parentElement?.innerText).slice(0,1000);
             const date=(cardText+' '+groupText).match(/\b(?:0?[1-9]|[12]\d|3[01])[./](?:0?[1-9]|1[012])(?:[./]\d{2,4})?\b/)?.[0]||'';
-            const subject=(cardText+' '+groupText).match(/(?:алгебра|геометрия|математика|русский язык|литература|информатика|физика|химия|биология|история|обществознание|география|английский язык|иностранный язык)/i)?.[0]||'';
+            const subject=(cardText+' '+groupText).match(/(?:алгебра|геометрия|математика|русский язык|литература|информатика|физика|химия|биология|история|обществознание|география|английский язык|иностранный(?: \(английский\))? язык|инженерный практикум|вероятность и статистика|практикум ЕГЭ по математике)/i)?.[0]||'';
             const link=card.querySelector('a[href]')?.getAttribute('href')||node.closest('a[href]')?.getAttribute('href')||'';
             const id=card.getAttribute('data-id')||card.getAttribute('data-testid')||card.getAttribute('id')||'';
             const resultButton=/результат/i.test(cardText);
@@ -185,9 +185,9 @@ async function scanVisibleAssignments() {
             ' | '+item.cardText.slice(0,130));
         }
         if(step%10===0)report('Прокрутка '+(area+1)+': '+Math.round(result.after)+'/'+Math.round(result.max)+' px; карточек '+assignments.size);
-        if(result.after===lastPosition&&result.height===lastHeight&&result.after>=result.max-2)stalled++;else stalled=0;
+        if(result.after===lastPosition&&result.height===lastHeight)stalled++;else stalled=0;
         lastPosition=result.after;lastHeight=result.height;
-        if(stalled>=5)break;
+        if(stalled>=5 || (step>=2 && result.after===result.before && result.after===0))break;
         await page.waitForTimeout(500);
       }
     }
