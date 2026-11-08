@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { chromium } from 'playwright';
+import { parseResultHtml, formatSummary } from './result-import.mjs';
 
 const profile = join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'HomeworkPunisher', 'BraveProfile');
 const bravePaths = [
@@ -17,6 +18,7 @@ let context = null, running = false, scanning = false, stopping = false, exiting
 let managedPage = null;
 let cancelScan = false;
 const log = [];
+const importedResults = new Map();
 const clients = new Set();
 function report(message) {
   const entry = new Date().toLocaleTimeString('ru-RU') + '  ' + message;
@@ -28,13 +30,36 @@ const html = String.raw`<!doctype html><html lang="ru"><meta charset="utf-8"><ti
 <style>body{font:16px system-ui;background:#111827;color:#f9fafb;max-width:780px;margin:50px auto;padding:0 20px}button{border:0;border-radius:9px;padding:13px 20px;margin:0 8px 16px 0;cursor:pointer;font-weight:600}button:disabled{opacity:.4}#start{background:#86efac}#stop{background:#fde68a}#exit{background:#fca5a5}pre{background:#030712;border-radius:12px;padding:18px;height:340px;overflow:auto;white-space:pre-wrap}small{color:#9ca3af}</style>
 <h1>Homework Punisher</h1><p>Локальная проверка МЭШ через отдельный профиль Brave</p>
 <button id="start">Открыть Brave для сканирования</button><button id="scan">Сканировать страницу</button><button id="manual">Открыть обычный Brave для результатов</button><button id="stop">Остановить</button><button id="exit">Выход</button>
-<p id="status">Готов к запуску</p><pre id="log"></pre>
+<p id="status">Готов к запуску</p><section><h2>Импорт результатов ЦДЗ</h2><input type="file" id="files" accept=".html,.htm,text/html" multiple><button id="import">Импортировать HTML</button><button id="copy">Скопировать сводку</button><button id="clear">Очистить импорт</button><pre id="summary">Пока нет импортированных заданий</pre></section><pre id="log"></pre>
 <small>Открой раздел «Задания» в Brave, затем нажми «Сканировать страницу». Для просмотра результатов используй кнопку «Открыть обычный Brave для результатов»: это отдельное окно без управления Playwright. При необходимости войди в МЭШ в обычном профиле. Публикаций нет.</small>
 <script>
 const out=document.getElementById('log'),status=document.getElementById('status');
 const stream=new EventSource('/events');
 stream.onmessage=e=>{out.textContent+=JSON.parse(e.data)+'\n';out.scrollTop=out.scrollHeight};
 async function act(name){try{const r=await fetch('/'+name,{method:'POST'});status.textContent=await r.text();if(name==='exit'){stream.close();window.close()}}catch(e){status.textContent='Приложение завершено'}}
+document.getElementById('import').onclick=async()=>{
+ const files=[...document.getElementById('files').files];
+ if(!files.length){status.textContent='Сначала выбери HTML-файлы';return;}
+ for(const file of files){
+   try {
+     const response=await fetch('/import-result',{method:'POST',headers:{'Content-Type':'text/html; charset=utf-8'},body:await file.text()});
+     const data=await response.json();
+     if(!response.ok){status.textContent=file.name+': '+data.error;continue;}
+     document.getElementById('summary').textContent=data.summary;
+     status.textContent='Импортировано заданий: '+data.imported+' из '+(data.taskCount||'?');
+   }catch(e){status.textContent='Ошибка импорта: '+e.message;}
+ }
+};
+document.getElementById('copy').onclick=async()=>{
+ const response=await fetch('/summary');const data=await response.json();
+ if(!data.imported){status.textContent='Нет импортированных заданий';return;}
+ try{await navigator.clipboard.writeText(data.summary);status.textContent='Сводка скопирована';}
+ catch(e){status.textContent='Не удалось скопировать: '+e.message;}
+};
+document.getElementById('clear').onclick=async()=>{
+ const response=await fetch('/clear-import',{method:'POST'});const data=await response.json();
+ document.getElementById('summary').textContent='Пока нет импортированных заданий';status.textContent=data.message;
+};
 document.getElementById('start').onclick=()=>act('start');
 document.getElementById('scan').onclick=()=>act('scan');
 document.getElementById('manual').onclick=()=>act('manual');
@@ -195,6 +220,34 @@ const server=http.createServer(async(req,res)=>{
     res.writeHead(200,{'Content-Type':'text/event-stream; charset=utf-8','Cache-Control':'no-cache','Connection':'keep-alive'});
     clients.add(res); for(const item of log)res.write('data: '+JSON.stringify(item)+'\n\n');
     req.on('close',()=>clients.delete(res)); return;
+  }
+  if(req.method==='GET'&&path==='/summary'){
+    const entries=[...importedResults.values()];
+    return send(res,200,JSON.stringify({imported:entries.length,taskCount:entries[0]?.taskCount||null,summary:formatSummary(entries)}),'application/json; charset=utf-8');
+  }
+  if(req.method==='POST'&&path==='/clear-import'){
+    importedResults.clear();
+    return send(res,200,JSON.stringify({message:'Импорт очищен'}),'application/json; charset=utf-8');
+  }
+  if(req.method==='POST'&&path==='/import-result'){
+    let body='';
+    try {
+      for await (const chunk of req) {
+        body+=chunk.toString('utf8');
+        if(body.length>5_000_000) throw new Error('Файл слишком большой (максимум 5 МБ)');
+      }
+      const item=parseResultHtml(body);
+      if(item.answer===null) throw new Error('Тип ответа пока не поддерживается: файл не добавлен');
+      if(importedResults.size && [...importedResults.values()].some(x=>x.taskCount!==item.taskCount || x.score!==item.score || x.maxScore!==item.maxScore)){
+        throw new Error('Возможно, файл от другого теста. Очисти импорт перед новым тестом.');
+      }
+      importedResults.set(item.number,item);
+      report('Импорт: задание №'+item.number+' | ответ '+item.answer+' | '+item.status);
+      const entries=[...importedResults.values()];
+      return send(res,200,JSON.stringify({imported:entries.length,taskCount:item.taskCount,summary:formatSummary(entries)}),'application/json; charset=utf-8');
+    } catch(e) {
+      return send(res,400,JSON.stringify({error:e.message}),'application/json; charset=utf-8');
+    }
   }
   if(req.method==='POST'&&path==='/start'){
     if(running||stopping) return send(res,409,'Проверка уже запущена');
