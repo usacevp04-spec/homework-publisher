@@ -53,6 +53,7 @@ async function scan() {
   try {
     context=await chromium.launchPersistentContext(profile, {
       executablePath:brave, headless:false, viewport:null,
+      chromiumSandbox:true,
       args:['--no-first-run']
     });
     // Persistent Brave profiles can restore an existing MES tab and a blank tab.
