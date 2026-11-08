@@ -99,74 +99,102 @@ async function scanVisibleAssignments() {
   if (scanning || !managedPage || managedPage.isClosed()) return;
   scanning=true; cancelScan=false;
   const page=managedPage;
-  const seen=new Set();
-  let total=0;
-  report('Начинаю расширенный поиск ЦДЗ: '+page.url().split('?')[0]);
+  const assignments=new Map();
+  report('Начинаю поиск карточек ЦДЗ: '+page.url().split('?')[0]);
   try {
-    // Traverse each scrollable container independently: the homework list may
-    // scroll inside a nested element instead of the document.
-    const candidates=await page.evaluate(() => {
-      const all=[document.scrollingElement,...document.querySelectorAll('*')].filter(Boolean);
-      return all.map((el,i)=>({i,el})).filter(({el})=>{
+    // Use a stable element index only for this scan; re-identify scroll areas
+    // each step because MES may rerender the list.
+    const areas=await page.evaluate(() => {
+      const elements=[document.scrollingElement,...document.querySelectorAll('*')].filter(Boolean);
+      return elements.map((el,index)=>({el,index})).filter(({el})=>{
         const style=getComputedStyle(el);
         return el.scrollHeight>el.clientHeight+100 && el.clientHeight>140 &&
           (el===document.scrollingElement || /auto|scroll|overlay/.test(style.overflowY));
-      }).map(({i,el})=>({
-        index:i, tag:el.tagName, cls:String(el.className||'').slice(0,70),
-        height:el.scrollHeight, view:el.clientHeight
+      }).map(({el,index})=>({
+        index,tag:el.tagName,cls:String(el.className||'').slice(0,70),
+        height:el.scrollHeight,view:el.clientHeight
       })).sort((a,b)=>b.height-a.height).slice(0,12);
     });
-    report('Прокручиваемых областей: '+candidates.length);
-    if(!candidates.length) report('Не обнаружены прокручиваемые области. Возможно, список ещё загружается.');
-    for(let area=0;area<candidates.length && !cancelScan;area++){
-      const info=candidates[area];
-      report('Область '+(area+1)+'/'+candidates.length+': '+info.tag+' '+info.cls+' ('+info.view+'/'+info.height+' px)');
-      let stalled=0, lastPosition=-1;
-      for(let step=0;step<120 && !cancelScan;step++){
+    report('Обнаружено прокручиваемых областей: '+areas.length);
+    if(!areas.length) report('Прокручиваемые области не найдены. Открой раздел «Задания» и дождись загрузки.');
+
+    for(let area=0;area<areas.length&&!cancelScan;area++) {
+      const info=areas[area];
+      report('Проверяю область '+(area+1)+'/'+areas.length+': '+info.tag+' '+info.cls);
+      let stalled=0,lastPosition=-1,lastHeight=-1;
+      for(let step=0;step<120&&!cancelScan;step++) {
         const result=await page.evaluate(({index,reset})=>{
           const all=[document.scrollingElement,...document.querySelectorAll('*')].filter(Boolean);
-          const el=all[index];
-          if(!el || !el.isConnected) return {missing:true,hits:[]};
-          if(reset) el.scrollTop=0;
+          const scroller=all[index];
+          if(!scroller||!scroller.isConnected) return {missing:true,items:[]};
+          if(reset) scroller.scrollTop=0;
+          const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
           const re=/цдз/i;
-          const hits=[];
-          for(const node of document.querySelectorAll('p,li,td,span,div')){
-            if(node.children.length && [...node.children].some(child=>re.test(child.innerText||''))) continue;
-            const value=(node.innerText||'').trim().replace(/\s+/g,' ');
-            if(!value || !re.test(value) || value.length>400) continue;
-            const parent=node.parentElement;
-            const context=(parent?.parentElement?.innerText||parent?.innerText||value)
-              .trim().replace(/\s+/g,' ').slice(0,500);
-            const rect=node.getBoundingClientRect();
-            // Deduplicate nested representations but retain equal texts in
-            // distinct visible homework cards.
-            hits.push({value,context,y:Math.round(rect.top)});
+          const matches=[...document.querySelectorAll('p,li,td,span,div,a')]
+            .filter(el=>{
+              const t=normalize(el.innerText);
+              return t.length>0&&t.length<450&&re.test(t)&&
+                ![...el.children].some(child=>re.test(child.innerText||''));
+            });
+          const items=[];
+          for(const node of matches) {
+            // Prefer the smallest ancestor representing a full assignment,
+            // not the entire subject/day group.
+            let card=node;
+            for(let depth=0;depth<6&&card.parentElement;depth++){
+              const parent=card.parentElement;
+              const t=normalize(parent.innerText);
+              if(t.length>900||parent===document.body)break;
+              card=parent;
+              if(parent.querySelector('button,a,[role="button"]')&&t.length>normalize(node.innerText).length+12)break;
+            }
+            const cardText=normalize(card.innerText).slice(0,700);
+            const title=normalize(node.innerText).slice(0,200);
+            const groupText=normalize(card.parentElement?.innerText).slice(0,1000);
+            const date=(cardText+' '+groupText).match(/\b(?:0?[1-9]|[12]\d|3[01])[./](?:0?[1-9]|1[012])(?:[./]\d{2,4})?\b/)?.[0]||'';
+            const subject=(cardText+' '+groupText).match(/(?:алгебра|геометрия|математика|русский язык|литература|информатика|физика|химия|биология|история|обществознание|география|английский язык|иностранный язык)/i)?.[0]||'';
+            const link=card.querySelector('a[href]')?.getAttribute('href')||node.closest('a[href]')?.getAttribute('href')||'';
+            const id=card.getAttribute('data-id')||card.getAttribute('data-testid')||card.getAttribute('id')||'';
+            const resultButton=/результат/i.test(cardText);
+            // Element identity differentiates equal-looking cards in the
+            // same rendered DOM; content differentiates recycled elements.
+            if(!window.__hpCardIds) {window.__hpCardIds=new WeakMap();window.__hpNextCardId=1;}
+            if(!window.__hpCardIds.has(card)) window.__hpCardIds.set(card,window.__hpNextCardId++);
+            const domId=window.__hpCardIds.get(card);
+            items.push({title,subject,date,link,id,domId,resultButton,cardText});
           }
-          const before=el.scrollTop;
-          const max=el.scrollHeight-el.clientHeight;
-          el.scrollTop=Math.min(max,before+Math.max(250,Math.round(el.clientHeight*.7)));
-          return {hits,before,after:el.scrollTop,max,scrollHeight:el.scrollHeight};
+          const before=scroller.scrollTop;
+          const max=scroller.scrollHeight-scroller.clientHeight;
+          scroller.scrollTop=Math.min(max,before+Math.max(250,Math.round(scroller.clientHeight*.7)));
+          return {items,before,after:scroller.scrollTop,max,height:scroller.scrollHeight};
         },{index:info.index,reset:step===0});
-        if(result.missing){report('Область изменилась при загрузке; пропускаю.');break;}
-        for(const hit of result.hits){
-          // Context helps distinguish identical labels across assignments.
-          const key=hit.value+'|'+hit.context;
-          if(!seen.has(key)){
-            seen.add(key);total++;
-            report('ЦДЗ #'+total+': '+hit.value.slice(0,140)+' | Контекст: '+hit.context.slice(0,160));
-          }
+        if(result.missing){report('Список перерисовался: область прокрутки изменилась.');break;}
+        for(const item of result.items){
+          // Distinguish cards with the same text by their actual DOM identity.
+          // When a stable task ID or link exists, prefer that instead.
+          const key=item.id?'id:'+item.id+'|'+item.title:
+            item.link?'link:'+item.link+'|'+item.title:
+            'dom:'+item.domId+'|'+item.title+'|'+item.cardText;
+          if(assignments.has(key))continue;
+          assignments.set(key,item);
+          report('Карточка #'+assignments.size+
+            ' | '+(item.subject||'предмет не определён')+
+            ' | '+(item.date||'дата не определена')+
+            ' | '+item.title+
+            (item.resultButton?' | Есть надпись «Результат»':'')+
+            ' | '+item.cardText.slice(0,130));
         }
-        if(step%10===0) report('Область '+(area+1)+', шаг '+(step+1)+': '+Math.round(result.after)+'/'+Math.round(result.max)+' px, найдено '+total);
-        if(result.after===lastPosition && result.after>=result.max-2) stalled++; else stalled=0;
-        lastPosition=result.after;
-        if(stalled>=5) break;
+        if(step%10===0)report('Прокрутка '+(area+1)+': '+Math.round(result.after)+'/'+Math.round(result.max)+' px; карточек '+assignments.size);
+        if(result.after===lastPosition&&result.height===lastHeight&&result.after>=result.max-2)stalled++;else stalled=0;
+        lastPosition=result.after;lastHeight=result.height;
+        if(stalled>=5)break;
         await page.waitForTimeout(500);
       }
     }
-    if(cancelScan) report('Сканирование остановлено.');
-    else report('Поиск завершён. Найдено '+total+' различных сочетаний текста и контекста ЦДЗ. Это предварительный результат, не число тестов.');
-  } catch(e) { if(!cancelScan) report('Ошибка сканирования: '+e.message); }
-  finally { scanning=false; }
+    if(cancelScan)report('Сканирование остановлено.');
+    else report('Готово: '+assignments.size+' предварительно различённых карточек ЦДЗ. Совпадения названий не объединялись. Для точного учёта требуется проверить структуру карточек МЭШ.');
+  } catch(e){if(!cancelScan)report('Ошибка сканирования: '+e.message);}
+  finally{scanning=false;}
 }
 
 const server=http.createServer(async(req,res)=>{
