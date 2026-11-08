@@ -13,7 +13,9 @@ const bravePaths = [
 ];
 const brave = bravePaths.find(existsSync);
 if (!brave) { console.error('Brave не найден. Установите Brave Browser.'); process.exit(1); }
-let context = null, running = false, stopping = false, exiting = false;
+let context = null, running = false, scanning = false, stopping = false, exiting = false;
+let managedPage = null;
+let cancelScan = false;
 const log = [];
 const clients = new Set();
 function report(message) {
@@ -25,15 +27,16 @@ function report(message) {
 const html = String.raw`<!doctype html><html lang="ru"><meta charset="utf-8"><title>Homework Punisher</title>
 <style>body{font:16px system-ui;background:#111827;color:#f9fafb;max-width:780px;margin:50px auto;padding:0 20px}button{border:0;border-radius:9px;padding:13px 20px;margin:0 8px 16px 0;cursor:pointer;font-weight:600}button:disabled{opacity:.4}#start{background:#86efac}#stop{background:#fde68a}#exit{background:#fca5a5}pre{background:#030712;border-radius:12px;padding:18px;height:340px;overflow:auto;white-space:pre-wrap}small{color:#9ca3af}</style>
 <h1>Homework Punisher</h1><p>Локальная проверка МЭШ через отдельный профиль Brave</p>
-<button id="start">Начать проверку</button><button id="stop">Остановить</button><button id="exit">Выход</button>
+<button id="start">Открыть Brave</button><button id="scan">Сканировать страницу</button><button id="stop">Остановить</button><button id="exit">Выход</button>
 <p id="status">Готов к запуску</p><pre id="log"></pre>
-<small>Первая версия: только поиск упоминаний ЦДЗ на открытой странице. Никаких публикаций.</small>
+<small>Открой раздел «Задания» в Brave, затем нажми «Сканировать страницу». Результаты тестов не открываются, публикаций нет.</small>
 <script>
 const out=document.getElementById('log'),status=document.getElementById('status');
 const stream=new EventSource('/events');
 stream.onmessage=e=>{out.textContent+=JSON.parse(e.data)+'\n';out.scrollTop=out.scrollHeight};
 async function act(name){try{const r=await fetch('/'+name,{method:'POST'});status.textContent=await r.text();if(name==='exit'){stream.close();window.close()}}catch(e){status.textContent='Приложение завершено'}}
 document.getElementById('start').onclick=()=>act('start');
+document.getElementById('scan').onclick=()=>act('scan');
 document.getElementById('stop').onclick=()=>act('stop');
 document.getElementById('exit').onclick=()=>act('exit');
 </script></html>`;
@@ -43,8 +46,9 @@ function send(res, code, value, type='text/plain; charset=utf-8') {
 async function stop() {
   if (stopping) return;
   stopping=true;
+  cancelScan=true;
   try { if (context) await context.close(); } catch(e) { report('Закрытие браузера: '+e.message); }
-  context=null; running=false; stopping=false; report('Проверка остановлена, окно Brave закрыто.');
+  context=null; managedPage=null; running=false; scanning=false; stopping=false; report('Проверка остановлена, окно Brave закрыто.');
 }
 async function scan() {
   if (running) return;
@@ -72,16 +76,56 @@ async function scan() {
         await spare.close().catch(() => {});
       }
     }
+    managedPage=page;
     report('Страница открыта: '+page.url().split('?')[0]);
-    report('Проверяю видимый текст страницы...');
-    await page.waitForTimeout(2500);
-    const matches=await page.getByText(/ЦДЗ/i).allTextContents().catch(()=>[]);
-    const unique=[...new Set(matches.map(s=>s.trim()).filter(Boolean))].slice(0,30);
-    if(unique.length) unique.forEach((s,i)=>report((i+1)+'. '+s.slice(0,180)));
-    else report('На текущей странице ЦДЗ не обнаружены. Это ещё не проверка всех дат и заданий.');
-    report('Диагностика завершена. Brave остаётся открытым до нажатия «Остановить».');
+    report('Перейди в Brave в раздел «Задания», затем нажми «Сканировать страницу».');
   } catch(e) { report('Ошибка: '+e.message); await stop(); }
 }
+
+async function scanVisibleAssignments() {
+  if (scanning || !managedPage || managedPage.isClosed()) return;
+  scanning=true; cancelScan=false;
+  const page=managedPage;
+  const found=new Map();
+  let unchanged=0, lastFingerprint='';
+  report('Начинаю поиск ЦДЗ на открытой странице: '+page.url().split('?')[0]);
+  try {
+    for(let step=0;step<45 && !cancelScan;step++) {
+      const data=await page.evaluate(() => {
+        const re=/цдз/i;
+        const nodes=[...document.querySelectorAll('p,li,td,span,div')];
+        const hits=[];
+        for(const el of nodes) {
+          if(el.children.length && [...el.children].some(c=>re.test(c.innerText||''))) continue;
+          const text=(el.innerText||'').trim().replace(/\s+/g,' ');
+          if(text && re.test(text) && text.length<=400) hits.push(text);
+        }
+        const scrollables=[document.scrollingElement,...document.querySelectorAll('*')]
+          .filter(Boolean).filter(el=>el.scrollHeight>el.clientHeight+80 && el.clientHeight>100);
+        const target=scrollables.sort((a,b)=>(b.clientHeight*b.clientWidth)-(a.clientHeight*a.clientWidth))[0];
+        const before=target?.scrollTop||0;
+        const height=target?.scrollHeight||0;
+        const viewport=target?.clientHeight||0;
+        if(target) target.scrollTop=Math.min(target.scrollTop+Math.max(350,Math.floor(viewport*.8)),height);
+        return {hits, before, after:target?.scrollTop||0,height,viewport};
+      });
+      for(const hit of data.hits) if(!found.has(hit)) {
+        found.set(hit,true); report('ЦДЗ #'+found.size+': '+hit.slice(0,200));
+      }
+      const fingerprint=[data.after,data.height,found.size].join(':');
+      if(fingerprint===lastFingerprint) unchanged++; else unchanged=0;
+      lastFingerprint=fingerprint;
+      if(step%5===0) report('Прокрутка '+(step+1)+': найдено '+found.size+' упоминаний ЦДЗ');
+      if(unchanged>=3) break;
+      await page.waitForTimeout(650);
+    }
+    if(cancelScan) report('Сканирование остановлено.');
+    else report('Сканирование закончено. Уникальных текстовых упоминаний ЦДЗ: '+found.size+'. Это ещё не число завершённых тестов.');
+    if(!found.size && !cancelScan) report('Проверь, что открыт именно раздел «Задания». Если список имеет отдельную прокрутку, потребуется уточнить его структуру.');
+  } catch(e) { if(!cancelScan) report('Ошибка сканирования: '+e.message); }
+  finally { scanning=false; }
+}
+
 const server=http.createServer(async(req,res)=>{
   const path=new URL(req.url,'http://localhost').pathname;
   if(req.method==='GET'&&path==='/') return send(res,200,html,'text/html; charset=utf-8');
@@ -93,6 +137,11 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&path==='/start'){
     if(running||stopping) return send(res,409,'Проверка уже запущена');
     void scan(); return send(res,200,'Проверка запущена');
+  }
+  if(req.method==='POST'&&path==='/scan'){
+    if(!running || !managedPage || managedPage.isClosed()) return send(res,409,'Сначала открой Brave');
+    if(scanning) return send(res,409,'Сканирование уже выполняется');
+    void scanVisibleAssignments(); return send(res,200,'Сканирование запущено');
   }
   if(req.method==='POST'&&path==='/stop'){
     void stop(); return send(res,200,'Останавливаю...');
