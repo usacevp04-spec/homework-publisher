@@ -56,10 +56,23 @@ async function scan() {
   report('Открываю Brave с отдельным профилем...');
   try {
     context=await chromium.launchPersistentContext(profile, {
-      executablePath:brave, headless:false, viewport:null,
+      executablePath:brave,
+      headless:false,
+      viewport:null,
       chromiumSandbox:true,
-      args:['--no-first-run']
+      ignoreDefaultArgs: ['--enable-automation'],
+      args:[
+        '--no-first-run',
+        '--disable-blink-features=AutomationControlled'
+      ]
     });
+
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+      });
+    });
+
     // Persistent Brave profiles can restore an existing MES tab and a blank tab.
     // Reuse the MES tab, or the initial blank tab, instead of opening another.
     const pages = context.pages();
