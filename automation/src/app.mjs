@@ -55,8 +55,22 @@ async function scan() {
       executablePath:brave, headless:false, viewport:null,
       args:['--no-first-run']
     });
-    const page=context.pages()[0] || await context.newPage();
-    await page.goto('https://school.mos.ru/diary/schedules/day', {waitUntil:'domcontentloaded',timeout:45000});
+    // Persistent Brave profiles can restore an existing MES tab and a blank tab.
+    // Reuse the MES tab, or the initial blank tab, instead of opening another.
+    const pages = context.pages();
+    const page = pages.find(p => p.url().startsWith('https://school.mos.ru/'))
+      || pages.find(p => p.url() === 'about:blank')
+      || pages[0]
+      || await context.newPage();
+    if (!page.url().startsWith('https://school.mos.ru/diary/schedules/day')) {
+      await page.goto('https://school.mos.ru/diary/schedules/day', {waitUntil:'domcontentloaded',timeout:45000});
+    }
+    // Close only spare blank tabs created/restored in this managed browser.
+    for (const spare of context.pages()) {
+      if (spare !== page && spare.url() === 'about:blank') {
+        await spare.close().catch(() => {});
+      }
+    }
     report('Страница открыта: '+page.url().split('?')[0]);
     report('Проверяю видимый текст страницы...');
     await page.waitForTimeout(2500);
