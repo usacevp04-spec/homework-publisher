@@ -100,7 +100,7 @@ async function scanVisibleAssignments() {
   scanning=true; cancelScan=false;
   const page=managedPage;
   const assignments=new Map();
-  report('Начинаю поиск карточек ЦДЗ: '+page.url().split('?')[0]);
+  report('Начинаю поиск ЦДЗ и цифровых заданий: '+page.url().split('?')[0]);
   try {
     // Use a stable element index only for this scan; re-identify scroll areas
     // each step because MES may rerender the list.
@@ -129,7 +129,7 @@ async function scanVisibleAssignments() {
           if(!scroller||!scroller.isConnected) return {missing:true,items:[]};
           if(reset) scroller.scrollTop=0;
           const normalize=value=>(value||'').replace(/\s+/g,' ').trim();
-          const re=/цдз/i;
+          const re=/цдз|цифров(?:ой|ого|ое|ые|ых|ым|ому|ыми)?\s+тест(?:а|ы|ов|ом|е|у|ами)?|цифров(?:ое|ого|ому|ым|ом|ые|ых|ыми)?\s+домашн(?:ее|его|ему|им|ем|ие|их|ими)?\s+задан(?:ие|ия|ию|ием|ии|ий|иями)?/i;
           const matches=[...document.querySelectorAll('p,li,td,span,div,a')]
             .filter(el=>{
               const t=normalize(el.innerText);
@@ -192,7 +192,7 @@ async function scanVisibleAssignments() {
       }
     }
     if(cancelScan)report('Сканирование остановлено.');
-    else report('Готово: '+assignments.size+' предварительно различённых карточек ЦДЗ. Совпадения названий не объединялись. Для точного учёта требуется проверить структуру карточек МЭШ.');
+    else report('Готово: '+assignments.size+' предварительно различённых карточек ЦДЗ/цифровых заданий. Совпадения названий не объединялись. Для точного учёта требуется проверить структуру карточек МЭШ.');
   } catch(e){if(!cancelScan)report('Ошибка сканирования: '+e.message);}
   finally{scanning=false;}
 }
