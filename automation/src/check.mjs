@@ -6,10 +6,28 @@ const targets = [
   'https://uchebnik.mos.ru/'
 ];
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  ignoreDefaultArgs: ['--enable-automation'],
+  args: [
+    '--disable-blink-features=AutomationControlled',
+    '--no-sandbox',
+    '--disable-infobars'
+  ]
+});
+
 const context = await browser.newContext({
-  viewport: { width: 900, height: 900 },
-  locale: 'ru-RU'
+  viewport: { width: 1280, height: 800 },
+  locale: 'ru-RU',
+  timezoneId: 'Europe/Moscow',
+  userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+});
+
+// Маскировка признаков автоматизации до выполнения скриптов страниц
+await context.addInitScript(() => {
+  Object.defineProperty(navigator, 'webdriver', {
+    get: () => undefined,
+  });
 });
 
 let reachable = false;
