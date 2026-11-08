@@ -27,9 +27,9 @@ function report(message) {
 const html = String.raw`<!doctype html><html lang="ru"><meta charset="utf-8"><title>Homework Punisher</title>
 <style>body{font:16px system-ui;background:#111827;color:#f9fafb;max-width:780px;margin:50px auto;padding:0 20px}button{border:0;border-radius:9px;padding:13px 20px;margin:0 8px 16px 0;cursor:pointer;font-weight:600}button:disabled{opacity:.4}#start{background:#86efac}#stop{background:#fde68a}#exit{background:#fca5a5}pre{background:#030712;border-radius:12px;padding:18px;height:340px;overflow:auto;white-space:pre-wrap}small{color:#9ca3af}</style>
 <h1>Homework Punisher</h1><p>Локальная проверка МЭШ через отдельный профиль Brave</p>
-<button id="start">Открыть Brave</button><button id="scan">Сканировать страницу</button><button id="stop">Остановить</button><button id="exit">Выход</button>
+<button id="start">Открыть Brave для сканирования</button><button id="scan">Сканировать страницу</button><button id="manual">Открыть обычный Brave для результатов</button><button id="stop">Остановить</button><button id="exit">Выход</button>
 <p id="status">Готов к запуску</p><pre id="log"></pre>
-<small>Открой раздел «Задания» в Brave, затем нажми «Сканировать страницу». Результаты тестов не открываются, публикаций нет.</small>
+<small>Открой раздел «Задания» в Brave, затем нажми «Сканировать страницу». Для просмотра результатов используй кнопку «Открыть обычный Brave для результатов»: это отдельное окно без управления Playwright. При необходимости войди в МЭШ в обычном профиле. Публикаций нет.</small>
 <script>
 const out=document.getElementById('log'),status=document.getElementById('status');
 const stream=new EventSource('/events');
@@ -37,6 +37,7 @@ stream.onmessage=e=>{out.textContent+=JSON.parse(e.data)+'\n';out.scrollTop=out.
 async function act(name){try{const r=await fetch('/'+name,{method:'POST'});status.textContent=await r.text();if(name==='exit'){stream.close();window.close()}}catch(e){status.textContent='Приложение завершено'}}
 document.getElementById('start').onclick=()=>act('start');
 document.getElementById('scan').onclick=()=>act('scan');
+document.getElementById('manual').onclick=()=>act('manual');
 document.getElementById('stop').onclick=()=>act('stop');
 document.getElementById('exit').onclick=()=>act('exit');
 </script></html>`;
@@ -203,6 +204,21 @@ const server=http.createServer(async(req,res)=>{
     if(!running || !managedPage || managedPage.isClosed()) return send(res,409,'Сначала открой Brave');
     if(scanning) return send(res,409,'Сканирование уже выполняется');
     void scanVisibleAssignments(); return send(res,200,'Сканирование запущено');
+  }
+  if(req.method==='POST'&&path==='/manual'){
+    try {
+      // Do not use Playwright or the dedicated automation profile here.
+      // Brave opens its normal user profile, separately from the managed browser.
+      const child=spawn(brave,['--new-window','https://school.mos.ru/diary/homeworks/homeworks'],{
+        detached:true,stdio:'ignore',windowsHide:false
+      });
+      child.unref();
+      report('Открыт обычный Brave для ручного просмотра результатов МЭШ (без Playwright).');
+      return send(res,200,'Открываю обычный Brave. При необходимости войди в МЭШ.');
+    } catch(e) {
+      report('Не удалось открыть обычный Brave: '+e.message);
+      return send(res,500,'Ошибка запуска Brave: '+e.message);
+    }
   }
   if(req.method==='POST'&&path==='/stop'){
     void stop(); return send(res,200,'Останавливаю...');
