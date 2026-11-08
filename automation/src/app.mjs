@@ -60,17 +60,7 @@ async function scan() {
       headless:false,
       viewport:null,
       chromiumSandbox:true,
-      ignoreDefaultArgs: ['--enable-automation'],
-      args:[
-        '--no-first-run',
-        '--disable-blink-features=AutomationControlled'
-      ]
-    });
-
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined,
-      });
+      args:['--no-first-run']
     });
 
     // Persistent Brave profiles can restore an existing MES tab and a blank tab.
