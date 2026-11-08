@@ -22,7 +22,7 @@ function report(message) {
   for (const res of clients) { try { res.write('data: ' + JSON.stringify(entry) + '\n\n'); } catch {} }
   console.log(entry);
 }
-const html = String.raw<!doctype html><html lang="ru"><meta charset="utf-8"><title>Homework Punisher</title>
+const html = String.raw`<!doctype html><html lang="ru"><meta charset="utf-8"><title>Homework Punisher</title>
 <style>body{font:16px system-ui;background:#111827;color:#f9fafb;max-width:780px;margin:50px auto;padding:0 20px}button{border:0;border-radius:9px;padding:13px 20px;margin:0 8px 16px 0;cursor:pointer;font-weight:600}button:disabled{opacity:.4}#start{background:#86efac}#stop{background:#fde68a}#exit{background:#fca5a5}pre{background:#030712;border-radius:12px;padding:18px;height:340px;overflow:auto;white-space:pre-wrap}small{color:#9ca3af}</style>
 <h1>Homework Punisher</h1><p>Локальная проверка МЭШ через отдельный профиль Brave</p>
 <button id="start">Начать проверку</button><button id="stop">Остановить</button><button id="exit">Выход</button>
@@ -36,7 +36,7 @@ async function act(name){try{const r=await fetch('/'+name,{method:'POST'});statu
 document.getElementById('start').onclick=()=>act('start');
 document.getElementById('stop').onclick=()=>act('stop');
 document.getElementById('exit').onclick=()=>act('exit');
-</script></html>;
+</script></html>`;
 function send(res, code, value, type='text/plain; charset=utf-8') {
   res.writeHead(code, {'Content-Type':type, 'Cache-Control':'no-store'}); res.end(value);
 }
